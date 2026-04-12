@@ -1,0 +1,55 @@
+name: Machine Learning CI
+
+on:
+  push:
+    branches: 
+      - main
+      - dev
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'docs/**'
+      - '.gitignore'
+      - '.vscode/**'
+      - '.idea/**'
+      - '.dvc/**'
+      - '**.dvc'
+      - 'dvc.yaml'
+      - 'dvc.lock'
+      - '**.ipynb'
+      - '.ipynb_checkpoints/**'
+      - 'mlruns/**'
+      - 'outputs/**'
+      - 'venv/**'
+
+  pull_request:
+    branches: 
+      - main
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Lint with flake8
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Test with pytest
+      run: |
+        pytest
