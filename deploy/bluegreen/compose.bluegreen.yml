@@ -1,0 +1,36 @@
+services:
+  fraud-api-blue:
+    image: ${BLUE_IMAGE:-ieee-fraud-api:latest}
+    container_name: fraud-api-blue
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  fraud-api-green:
+    image: ${GREEN_IMAGE:-ieee-fraud-api:latest}
+    container_name: fraud-api-green
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    profiles:
+      - green
+
+  fraud-api-proxy:
+    image: nginx:1.27-alpine
+    container_name: fraud-api-proxy
+    depends_on:
+      - fraud-api-blue
+    ports:
+      - "${PROXY_PORT:-8080}:80"
+    volumes:
+      - ./nginx/conf.d/default.conf:/etc/nginx/conf.d/default.conf:ro

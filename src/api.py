@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-MODEL_PATH = Path("models/model.pkl")
+MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/model.pkl"))
+PREPROCESSOR_PATH = Path(os.getenv("PREPROCESSOR_PATH", "models/preprocessor_v1.pkl"))
+FEATURE_ARTIFACT_PATH = Path(os.getenv("FEATURE_ARTIFACT_PATH", "artifacts/fe_artifact.pkl"))
 
 
 class PredictionRequest(BaseModel):
@@ -114,11 +117,24 @@ app = FastAPI(
     description="Live inference API for fraud probability prediction."
 )
 
-raw_pipeline = RawInferencePipeline(
-    preprocessor_path="models/preprocessor_v1.pkl",
-    feature_artifact_path="artifacts/fe_artifact.pkl",
-    model_artifact_path="models/model.pkl",
-)
+
+def init_raw_pipeline() -> tuple[RawInferencePipeline | None, str | None]:
+    try:
+        pipeline = RawInferencePipeline(
+            preprocessor_path=str(PREPROCESSOR_PATH),
+            feature_artifact_path=str(FEATURE_ARTIFACT_PATH),
+            model_artifact_path=str(MODEL_PATH),
+        )
+        return pipeline, None
+    except FileNotFoundError as exc:
+        logging.warning("Raw inference pipeline is unavailable: %s", exc)
+        return None, str(exc)
+    except Exception as exc:
+        logging.exception("Raw inference pipeline failed to initialize")
+        return None, str(exc)
+
+
+raw_pipeline, raw_pipeline_error = init_raw_pipeline()
 
 
 @app.get("/health")
@@ -128,6 +144,9 @@ def health():
         "model_name": model_name,
         "threshold": threshold,
         "model_path": str(MODEL_PATH),
+        "raw_pipeline_ready": raw_pipeline is not None,
+        "preprocessor_path": str(PREPROCESSOR_PATH),
+        "feature_artifact_path": str(FEATURE_ARTIFACT_PATH),
     }
 
 
@@ -169,6 +188,15 @@ def predict_raw(request: RawPredictionRequest):
     try:
         if not request.records:
             raise HTTPException(status_code=400, detail="records must not be empty")
+
+        if raw_pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Raw prediction pipeline is unavailable. "
+                    f"Missing or invalid artifact: {raw_pipeline_error}"
+                ),
+            )
 
         results = raw_pipeline.predict_raw(
             records=request.records,

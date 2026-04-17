@@ -165,6 +165,36 @@ docker run -p 8000:8000 ieee-fraud-api
 docker compose up --build
 ```
 
+## Blue-Green Deployment
+
+Local blue-green deployment files are in [deploy/bluegreen](deploy/bluegreen/README.md).
+
+Quick start:
+
+```bash
+docker compose -f deploy/bluegreen/compose.bluegreen.yml up -d fraud-api-blue fraud-api-proxy
+curl http://127.0.0.1:8080/health
+```
+
+Deploy a new version to green:
+
+```bash
+docker build -t ieee-fraud-api:green .
+bash scripts/bluegreen-deploy.sh green ieee-fraud-api:green
+```
+
+## GCP Cloud Run Deployment
+
+GCP deployment instructions are in [deploy/gcp/README.md](deploy/gcp/README.md).
+
+Quick start:
+
+```bash
+gcloud auth login
+PROJECT_ID=<your-project-id> REGION=asia-southeast1 SERVICE_NAME=fraud-api TRAFFIC_TAG=green bash scripts/gcp-cloudrun-deploy.sh
+SERVICE_NAME=fraud-api REGION=asia-southeast1 TRAFFIC_TAG=green bash scripts/gcp-cloudrun-switch.sh
+```
+
 ---
 
 ## Model Information
