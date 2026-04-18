@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from src.inference_pipeline import RawInferencePipeline
 from src.monitoring import (
@@ -182,6 +183,7 @@ def health():
         "feature_artifact_path": str(FEATURE_ARTIFACT_PATH),
         "prediction_log_path": str(PREDICTION_LOG_PATH),
         "feedback_log_path": str(FEEDBACK_LOG_PATH),
+        "metrics_path": "/metrics",
     }
 
 
@@ -322,3 +324,9 @@ def feedback(request: FeedbackRequest):
     except Exception as e:
         logging.exception("Feedback logging failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Expose Prometheus-compatible service metrics for Kubernetes monitoring.
+Instrumentator(
+    excluded_handlers=["/health", "/metrics"],
+).instrument(app).expose(app, include_in_schema=False)

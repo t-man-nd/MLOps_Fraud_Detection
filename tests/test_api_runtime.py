@@ -25,6 +25,15 @@ def test_health_reports_raw_pipeline_status():
     assert "raw_pipeline_ready" in payload
     assert "prediction_log_path" in payload
     assert "feedback_log_path" in payload
+    assert payload["metrics_path"] == "/metrics"
+
+
+def test_metrics_endpoint_is_exposed():
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "http_requests_total" in response.text or "http_request_duration_seconds" in response.text
 
 
 def test_predict_returns_503_when_model_artifact_is_missing(monkeypatch):

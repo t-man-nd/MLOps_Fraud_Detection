@@ -5,16 +5,24 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y libgomp1 curl
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgomp1 curl && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+RUN useradd --create-home --shell /bin/bash appuser
+
+COPY requirements-runtime.txt .
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements-runtime.txt
 
 COPY src ./src
 COPY models ./models
 COPY artifacts ./artifacts
+
+RUN chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8000
 

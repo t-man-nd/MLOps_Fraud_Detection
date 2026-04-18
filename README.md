@@ -5,7 +5,7 @@
 ```bash
 git clone https://github.com/team-5-fraud-dectection/MLOps_Fraud_Detection.git
 cd MLOps_Fraud_Detection
-git checkout ldtesting
+git checkout merged
 ````
 
 ---
@@ -143,35 +143,28 @@ curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" -
 
 ---
 
-## Lecture Alignment for My Scope
+## Lecture Alignment
 
-The lecture PDF focuses on the following serving pattern:
+This repo now follows the same end-to-end direction covered across the course lectures:
 
-- wrap the model with `FastAPI`
-- containerize it with `Docker`
-- expose prediction endpoints
-- monitor model behavior after deployment
+- package the trained model behind a `FastAPI` service
+- containerize the service with `Docker`
+- validate code quality with `GitHub Actions`
+- register production-ready model versions in `MLflow`
+- monitor deployed predictions with feedback and drift reports
+- trigger retraining when monitoring crosses configured thresholds
+- deploy the API to Kubernetes with a `Deployment` + `NodePort Service`
+- expose Prometheus-compatible metrics and scrape them with a `ServiceMonitor`
 
-This repo stays aligned with that method for the part I am responsible for:
+So the project is no longer only a CI/CD slice. It now includes the full production path needed for reporting and demo:
 
-- `src/api.py` exposes `/predict`, `/predict_raw`, `/feedback`, and `/health`
-- `Dockerfile` packages the inference service
-- prediction and feedback logs are written to `logs/`
-- Evidently is used for drift reporting
-- monitoring outputs are summarized into `status_summary.json`
-
-For our team split:
-
-- Kubernetes / Prometheus / Grafana are handled separately by my teammate
-- this repo focuses on the CI/CD and CT automation around the FastAPI service
-
-So the repo is not changing the lecture method. It keeps the same serving pattern, then extends it with automation:
-
-- `quality-ci.yml` for lint + tests
-- `model-registry-promotion.yml` for MLflow registry promotion
-- `continuous-training.yml` for retraining when monitoring signals degradation
-
-These CI/CD and CT pieces are project extensions on top of the lecture workflow, not a different deployment methodology.
+- `src/api.py` exposes `/predict`, `/predict_raw`, `/feedback`, `/health`, and `/metrics`
+- `Dockerfile` packages the inference service with a runtime-only dependency set and runs it as a non-root container
+- `.github/workflows/quality-ci.yml` checks lint + tests
+- `.github/workflows/docker-image.yml` builds and publishes the API image to `GHCR`
+- `.github/workflows/model-registry-promotion.yml` promotes MLflow candidate versions
+- `.github/workflows/continuous-training.yml` retrains only when monitoring requests it
+- `deployment.yaml`, `service.yaml`, and `deployment/monitoring/servicemonitor.yaml` cover the Kubernetes deployment path from the lecture
 
 ---
 
@@ -180,13 +173,15 @@ These CI/CD and CT pieces are project extensions on top of the lecture workflow,
 ### Build image
 
 ```bash
-docker build -t ieee-fraud-api .
+docker build -t ghcr.io/team-5-fraud-dectection/mlops-fraud-detection:latest .
 ```
+
+The Docker image installs `requirements-runtime.txt` so the deployed API image stays smaller than the full training environment in `requirements.txt`.
 
 ### Run container
 
 ```bash
-docker run -p 8000:8000 ieee-fraud-api
+docker run -p 8000:8000 ghcr.io/team-5-fraud-dectection/mlops-fraud-detection:latest
 ```
 
 ---
@@ -196,6 +191,55 @@ docker run -p 8000:8000 ieee-fraud-api
 ```bash
 docker compose up --build
 ```
+
+## Docker Image CI/CD
+
+The repository now includes `.github/workflows/docker-image.yml`.
+
+What it does:
+
+- builds the FastAPI image on every push / PR
+- pushes the image to `GHCR` on branch pushes
+- tags images by branch name and commit SHA
+
+Published image target:
+
+```text
+ghcr.io/team-5-fraud-dectection/mlops-fraud-detection
+```
+
+This matches the image reference used in the Kubernetes manifests.
+
+## Kubernetes Deployment
+
+The lecture K8s deployment pattern is implemented with:
+
+- [deployment.yaml](deployment.yaml)
+- [service.yaml](service.yaml)
+- [deployment/kubernetes](deployment/kubernetes/README.md)
+
+Quick start with `kind`:
+
+```bash
+kind create cluster --name mlops-cluster --config deployment/kubernetes/kind-three-node-cluster.yaml
+docker build -t ghcr.io/team-5-fraud-dectection/mlops-fraud-detection:latest .
+kind load docker-image ghcr.io/team-5-fraud-dectection/mlops-fraud-detection:latest --name mlops-cluster
+kubectl apply -k deployment/kubernetes
+kubectl rollout status deployment/ml-api
+```
+
+Access the deployed API:
+
+```text
+http://localhost:30007/docs
+```
+
+The deployment includes:
+
+- 2 replicas
+- rolling updates
+- readiness + liveness probes on `/health`
+- resource requests and limits
 
 ## Blue-Green Deployment
 
@@ -238,6 +282,7 @@ Prediction monitoring is built into the FastAPI service:
 - `/predict` and `/predict_raw` append per-record prediction events to `logs/predictions.jsonl`
 - `/feedback` appends realized labels to `logs/prediction_feedback.jsonl`
 - `/health` exposes monitoring paths and model readiness
+- `/metrics` exposes Prometheus-compatible HTTP metrics for Kubernetes monitoring
 
 Generate a more production-like demo window by replaying held-out validation features through the live API:
 
@@ -296,6 +341,38 @@ Notes:
 - For a quick monitoring demo, use `X_train` as reference and replay a sampled slice of `X_val/y_val` as the current window.
 - Evidently works best in Python 3.11. If your local Python is incompatible, run drift reporting through the project's CI or Docker environment.
 - `monitor_status.py` is the bridge to CT: it emits `should_retrain=true` when F1 drops below threshold or drift becomes too large.
+
+## Prometheus & Grafana on Kubernetes
+
+The repository now includes monitoring assets in [deployment/monitoring](deployment/monitoring/README.md):
+
+- `deployment/monitoring/servicemonitor.yaml`
+- `deployment/monitoring/kube-prometheus-stack-values.yaml`
+
+Install the monitoring stack:
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm upgrade --install prom \
+  -n monitoring \
+  --create-namespace \
+  prometheus-community/kube-prometheus-stack \
+  -f deployment/monitoring/kube-prometheus-stack-values.yaml
+kubectl apply -k deployment/monitoring
+```
+
+Access:
+
+- Prometheus: `http://localhost:30300`
+- Grafana: `http://localhost:30200`
+
+This matches the lecture path of:
+
+- instrument FastAPI
+- expose `/metrics`
+- scrape with `ServiceMonitor`
+- visualize in Prometheus / Grafana
 
 ## Continuous Training (CT)
 
