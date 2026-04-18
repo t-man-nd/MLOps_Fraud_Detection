@@ -17,4 +17,5 @@ __pycache__/
 *.pyc
 
 # Notebook
-*.ipynb
+*.ipynb.DS_Store
+.DS_Store
