@@ -9,6 +9,13 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from src.inference_pipeline import RawInferencePipeline
+from src.monitoring import (
+    FEEDBACK_LOG_PATH,
+    PREDICTION_LOG_PATH,
+    append_jsonl,
+    build_feedback_events,
+    build_prediction_events,
+)
 from src.validation import validate_feature_matrix, validate_model_artifact
 
 
@@ -29,6 +36,19 @@ class PredictionRequest(BaseModel):
 class RawPredictionRequest(BaseModel):
     records: list[dict[str, Any]]
     context: list[dict[str, Any]] | None = None
+
+
+class FeedbackRecord(BaseModel):
+    prediction_id: str
+    actual_label: int = Field(..., ge=0, le=1)
+    request_id: str | None = None
+    observed_at: str | None = None
+    feedback_source: str | None = None
+    notes: str | None = None
+
+
+class FeedbackRequest(BaseModel):
+    items: list[FeedbackRecord]
 
 
 def sanitize_feature_name(name: str) -> str:
@@ -160,6 +180,8 @@ def health():
         "raw_pipeline_ready": raw_pipeline is not None,
         "preprocessor_path": str(PREPROCESSOR_PATH),
         "feature_artifact_path": str(FEATURE_ARTIFACT_PATH),
+        "prediction_log_path": str(PREDICTION_LOG_PATH),
+        "feedback_log_path": str(FEEDBACK_LOG_PATH),
     }
 
 
@@ -182,11 +204,28 @@ def predict(request: PredictionRequest):
         X = prepare_features(df_input, artifact)
         probabilities = get_probabilities(model, X)
         predictions = (probabilities >= threshold).astype(int)
+        logged_records = X.to_dict(orient="records")
+        logged_events = build_prediction_events(
+            logged_records,
+            probabilities,
+            predictions,
+            endpoint="/predict",
+            model_name=model_name,
+            threshold=threshold,
+            model_ready=True,
+        )
+
+        try:
+            append_jsonl(PREDICTION_LOG_PATH, logged_events)
+        except Exception:
+            logging.exception("Failed to write prediction logs")
 
         results = []
         for i, row in enumerate(request.records):
             results.append({
                 "index": i,
+                "request_id": logged_events[i]["request_id"],
+                "prediction_id": logged_events[i]["prediction_id"],
                 "fraud_probability": float(probabilities[i]),
                 "prediction": int(predictions[i]),
                 "threshold": threshold,
@@ -220,18 +259,66 @@ def predict_raw(request: RawPredictionRequest):
                 ),
             )
 
-        results = raw_pipeline.predict_raw(
-            records=request.records,
+        prepared_features = raw_pipeline.prepare_raw_features(
+            request.records,
             context=request.context,
         )
+        results = raw_pipeline.predict_feature_matrix(prepared_features)
+
+        probabilities = np.array([row["fraud_probability"] for row in results], dtype=float)
+        predictions = np.array([row["prediction"] for row in results], dtype=int)
+        logged_events = build_prediction_events(
+            prepared_features.to_dict(orient="records"),
+            probabilities,
+            predictions,
+            endpoint="/predict_raw",
+            model_name=raw_pipeline.model_name,
+            threshold=raw_pipeline.threshold,
+            model_ready=True,
+        )
+
+        try:
+            append_jsonl(PREDICTION_LOG_PATH, logged_events)
+        except Exception:
+            logging.exception("Failed to write raw prediction logs")
+
+        enriched_results = []
+        for index, result in enumerate(results):
+            enriched_results.append(
+                {
+                    **result,
+                    "request_id": logged_events[index]["request_id"],
+                    "prediction_id": logged_events[index]["prediction_id"],
+                }
+            )
 
         return {
-            "n_records": len(results),
-            "results": results,
+            "n_records": len(enriched_results),
+            "results": enriched_results,
         }
 
     except HTTPException:
         raise
     except Exception as e:
         logging.exception("Raw prediction failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/feedback")
+def feedback(request: FeedbackRequest):
+    try:
+        if not request.items:
+            raise HTTPException(status_code=400, detail="items must not be empty")
+
+        events = build_feedback_events([item.model_dump() for item in request.items])
+        append_jsonl(FEEDBACK_LOG_PATH, events)
+
+        return {
+            "n_records": len(events),
+            "feedback_log_path": str(FEEDBACK_LOG_PATH),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Feedback logging failed")
         raise HTTPException(status_code=500, detail=str(e))

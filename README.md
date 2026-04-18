@@ -195,6 +195,52 @@ PROJECT_ID=<your-project-id> REGION=asia-southeast1 SERVICE_NAME=fraud-api TRAFF
 SERVICE_NAME=fraud-api REGION=asia-southeast1 TRAFFIC_TAG=green bash scripts/gcp-cloudrun-switch.sh
 ```
 
+## Monitoring & Drift Detection
+
+Prediction monitoring is built into the FastAPI service:
+
+- `/predict` and `/predict_raw` append per-record prediction events to `logs/predictions.jsonl`
+- `/feedback` appends realized labels to `logs/prediction_feedback.jsonl`
+- `/health` exposes monitoring paths and model readiness
+
+Generate a realized performance summary from prediction + feedback logs:
+
+```bash
+python src/monitor_performance.py \
+  --prediction_log_path logs/predictions.jsonl \
+  --feedback_log_path logs/prediction_feedback.jsonl \
+  --output_path reports/monitoring/performance_summary.json
+```
+
+Generate an Evidently data drift report:
+
+```bash
+python src/monitor_drift.py \
+  --reference_path data/featured/X_val.parquet \
+  --prediction_log_path logs/predictions.jsonl \
+  --output_dir reports/drift \
+  --drift_share_threshold 0.5 \
+  --min_current_records 30
+```
+
+If your local Python version has issues importing Evidently, run the drift report through Docker:
+
+```bash
+bash scripts/run-drift-report.sh
+```
+
+Combine performance + drift outputs into a single retraining status summary:
+
+```bash
+python src/monitor_status.py
+```
+
+Notes:
+
+- The drift script compares the reference feature dataset against recent inference features extracted from prediction logs.
+- Evidently works best in Python 3.11. If your local Python is incompatible, run drift reporting through the project's CI or Docker environment.
+- `monitor_status.py` is the bridge to CT: it emits `should_retrain=true` when F1 drops below threshold or drift becomes too large.
+
 ---
 
 ## Model Information

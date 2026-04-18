@@ -8,6 +8,8 @@ models/
 
 # MLflow
 mlruns/
+logs/
+reports/
 
 # CatBoost logs
 catboost_info/

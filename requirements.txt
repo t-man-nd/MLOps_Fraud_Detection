@@ -11,5 +11,7 @@ uvicorn[standard]
 pyarrow
 mlflow
 optuna
+evidently
+pyyaml
 pytest
 flake8

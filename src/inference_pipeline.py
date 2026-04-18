@@ -90,7 +90,7 @@ class RawInferencePipeline:
         X = X.replace([np.inf, -np.inf], np.nan).fillna(0.0).astype("float32")
         return X
 
-    def predict_raw(self, records: list[dict[str, Any]], context: list[dict[str, Any]] | None = None):
+    def prepare_raw_features(self, records: list[dict[str, Any]], context: list[dict[str, Any]] | None = None):
         raw_df = pd.DataFrame(records)
         context = context or [{} for _ in range(len(raw_df))]
 
@@ -105,8 +105,9 @@ class RawInferencePipeline:
 
         featured = pd.concat(featured_rows, axis=0).reset_index(drop=True)
         X = self._align_features(featured)
-        X = validate_feature_matrix(X, dataset_name="raw inference features")
+        return validate_feature_matrix(X, dataset_name="raw inference features")
 
+    def predict_feature_matrix(self, X: pd.DataFrame):
         if hasattr(self.model, "predict_proba"):
             proba = self.model.predict_proba(X)[:, 1]
         else:
@@ -127,3 +128,7 @@ class RawInferencePipeline:
                 }
             )
         return results
+
+    def predict_raw(self, records: list[dict[str, Any]], context: list[dict[str, Any]] | None = None):
+        X = self.prepare_raw_features(records, context=context)
+        return self.predict_feature_matrix(X)
