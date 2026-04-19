@@ -225,7 +225,7 @@ def predict(request: PredictionRequest):
             logging.exception("Failed to write prediction logs")
 
         results = []
-        for i, row in enumerate(request.records):
+        for i, _row in enumerate(request.records):
             results.append({
                 "index": i,
                 "request_id": logged_events[i]["request_id"],
