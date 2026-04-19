@@ -10,6 +10,7 @@ prometheus-fastapi-instrumentator==6.1.0
 httpx==0.28.1
 uvicorn[standard]==0.44.0
 pyarrow==21.0.0
+kagglehub==0.3.13
 mlflow==3.11.1
 optuna==4.6.0
 evidently==0.7.21

@@ -1,5 +1,8 @@
 import logging
 import os
+import shutil
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,15 +23,31 @@ from src.monitoring import (
 from src.risk_score import RiskScoringEngine
 from src.validation import validate_feature_matrix, validate_model_artifact
 
+try:
+    import kagglehub
+except ImportError:  # pragma: no cover - optional dependency in some environments
+    kagglehub = None
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
+logger = logging.getLogger(__name__)
 
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/model.pkl"))
 PREPROCESSOR_PATH = Path(os.getenv("PREPROCESSOR_PATH", "models/preprocessor_v1.pkl"))
 FEATURE_ARTIFACT_PATH = Path(os.getenv("FEATURE_ARTIFACT_PATH", "artifacts/fe_artifact.pkl"))
+KAGGLE_COMPETITION = os.getenv("KAGGLE_COMPETITION", "ieee-fraud-detection")
+DATA_RAW_DIR = Path(os.getenv("DATA_RAW_DIR", "data/raw"))
+INFERENCE_LOG_FILE = Path(os.getenv("INFERENCE_LOG_FILE", "logs/inference_history.csv"))
+INFERENCE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+AUTO_DOWNLOAD_KAGGLE_DATA = os.getenv("AUTO_DOWNLOAD_KAGGLE_DATA", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class PredictionRequest(BaseModel):
@@ -51,6 +70,60 @@ class FeedbackRecord(BaseModel):
 
 class FeedbackRequest(BaseModel):
     items: list[FeedbackRecord]
+
+
+class DownloadDataRequest(BaseModel):
+    competition: str = Field(default=KAGGLE_COMPETITION)
+    force: bool = False
+
+
+def download_kaggle_dataset(
+    competition: str = KAGGLE_COMPETITION,
+    dest_dir: Path = DATA_RAW_DIR,
+    force: bool = False,
+) -> Path:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    existing_csv_files = list(dest_dir.rglob("*.csv"))
+    if existing_csv_files and not force:
+        logger.info(
+            "Kaggle raw data already exists at %s (%d csv files).",
+            dest_dir,
+            len(existing_csv_files),
+        )
+        return dest_dir
+
+    if kagglehub is None:
+        raise RuntimeError("kagglehub is not installed in the current environment.")
+
+    logger.info("Downloading Kaggle competition data for '%s' ...", competition)
+    kaggle_cache_path = Path(kagglehub.competition_download(competition))
+
+    for src_file in kaggle_cache_path.rglob("*"):
+        if src_file.is_file():
+            relative = src_file.relative_to(kaggle_cache_path)
+            dst_file = dest_dir / relative
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_file)
+
+    logger.info("Kaggle data synced to %s", dest_dir)
+    return dest_dir
+
+
+def log_inference_data(
+    input_records: list[dict[str, Any]],
+    probabilities: np.ndarray,
+    predictions: np.ndarray,
+    endpoint: str,
+) -> None:
+    df_log = pd.DataFrame(input_records)
+    df_log["fraud_probability"] = probabilities
+    df_log["prediction"] = predictions
+    df_log["endpoint"] = endpoint
+    df_log["timestamp"] = datetime.now().isoformat()
+
+    header = not INFERENCE_LOG_FILE.exists()
+    df_log.to_csv(INFERENCE_LOG_FILE, mode="a", header=header, index=False)
 
 
 def sanitize_feature_name(name: str) -> str:
@@ -140,19 +213,6 @@ def init_model_artifact() -> tuple[dict[str, Any] | None, str | None]:
         return None, str(exc)
 
 
-artifact, artifact_error = init_model_artifact()
-model = artifact["model"] if artifact else None
-model_name = artifact["model_name"] if artifact else "unavailable"
-threshold = float(artifact["threshold"]) if artifact else None
-risk_engine = RiskScoringEngine()
-
-app = FastAPI(
-    title="IEEE Fraud Detection API",
-    version="1.0.0",
-    description="Live inference API for fraud probability prediction."
-)
-
-
 def init_raw_pipeline() -> tuple[RawInferencePipeline | None, str | None]:
     try:
         pipeline = RawInferencePipeline(
@@ -169,7 +229,47 @@ def init_raw_pipeline() -> tuple[RawInferencePipeline | None, str | None]:
         return None, str(exc)
 
 
-raw_pipeline, raw_pipeline_error = init_raw_pipeline()
+artifact: dict[str, Any] | None = None
+artifact_error: str | None = None
+model: Any | None = None
+model_name = "unavailable"
+threshold: float | None = None
+raw_pipeline: RawInferencePipeline | None = None
+raw_pipeline_error: str | None = None
+risk_engine = RiskScoringEngine()
+
+
+def refresh_runtime_state() -> None:
+    global artifact, artifact_error, model, model_name, threshold, raw_pipeline, raw_pipeline_error
+
+    artifact, artifact_error = init_model_artifact()
+    model = artifact["model"] if artifact else None
+    model_name = artifact["model_name"] if artifact else "unavailable"
+    threshold = float(artifact["threshold"]) if artifact else None
+    raw_pipeline, raw_pipeline_error = init_raw_pipeline()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if AUTO_DOWNLOAD_KAGGLE_DATA:
+        try:
+            download_kaggle_dataset(force=False)
+        except Exception as exc:  # pragma: no cover - startup network/auth dependent
+            logger.warning("Automatic Kaggle download skipped: %s", exc)
+
+    refresh_runtime_state()
+    yield
+
+
+app = FastAPI(
+    title="IEEE Fraud Detection API",
+    version="1.0.0",
+    description="Live inference API for fraud probability prediction.",
+    lifespan=lifespan,
+)
+
+
+refresh_runtime_state()
 
 
 @app.get("/health")
@@ -185,8 +285,33 @@ def health():
         "feature_artifact_path": str(FEATURE_ARTIFACT_PATH),
         "prediction_log_path": str(PREDICTION_LOG_PATH),
         "feedback_log_path": str(FEEDBACK_LOG_PATH),
+        "inference_log_path": str(INFERENCE_LOG_FILE),
+        "data_raw_dir": str(DATA_RAW_DIR),
+        "kaggle_competition": KAGGLE_COMPETITION,
         "metrics_path": "/metrics",
     }
+
+
+@app.post("/download-data")
+def download_data(request: DownloadDataRequest):
+    try:
+        destination = download_kaggle_dataset(
+            competition=request.competition,
+            force=request.force,
+        )
+        n_csv_files = len(list(destination.rglob("*.csv")))
+        return {
+            "status": "downloaded",
+            "competition": request.competition,
+            "destination": str(destination),
+            "csv_files": n_csv_files,
+            "force": request.force,
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logging.exception("Kaggle data download failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/predict")
@@ -223,6 +348,11 @@ def predict(request: PredictionRequest):
             append_jsonl(PREDICTION_LOG_PATH, logged_events)
         except Exception:
             logging.exception("Failed to write prediction logs")
+
+        try:
+            log_inference_data(request.records, probabilities, predictions, endpoint="/predict")
+        except Exception:
+            logging.exception("Failed to write inference CSV logs")
 
         results = []
         for i, _row in enumerate(request.records):
@@ -285,6 +415,11 @@ def predict_raw(request: RawPredictionRequest):
             append_jsonl(PREDICTION_LOG_PATH, logged_events)
         except Exception:
             logging.exception("Failed to write raw prediction logs")
+
+        try:
+            log_inference_data(request.records, probabilities, predictions, endpoint="/predict_raw")
+        except Exception:
+            logging.exception("Failed to write raw inference CSV logs")
 
         enriched_results = []
         for index, result in enumerate(results):

@@ -45,6 +45,8 @@ def test_health_reports_raw_pipeline_status():
     assert "raw_pipeline_ready" in payload
     assert "prediction_log_path" in payload
     assert "feedback_log_path" in payload
+    assert "inference_log_path" in payload
+    assert "data_raw_dir" in payload
     assert payload["metrics_path"] == "/metrics"
 
 
@@ -85,7 +87,9 @@ def test_predict_raw_returns_503_when_pipeline_artifact_is_missing(monkeypatch):
 
 def test_predict_logs_events_and_returns_ids(monkeypatch, tmp_path):
     prediction_log = tmp_path / "predictions.jsonl"
+    inference_log = tmp_path / "inference_history.csv"
     monkeypatch.setattr(api, "PREDICTION_LOG_PATH", prediction_log)
+    monkeypatch.setattr(api, "INFERENCE_LOG_FILE", inference_log)
     monkeypatch.setattr(
         api,
         "artifact",
@@ -116,6 +120,7 @@ def test_predict_logs_events_and_returns_ids(monkeypatch, tmp_path):
     assert logged[0]["event_type"] == "prediction"
     assert logged[0]["endpoint"] == "/predict"
     assert abs(logged[0]["feature__feature_a"] - 1.23) < 1e-6
+    assert inference_log.exists()
 
 
 def test_feedback_endpoint_appends_feedback_log(monkeypatch, tmp_path):
@@ -147,7 +152,9 @@ def test_feedback_endpoint_appends_feedback_log(monkeypatch, tmp_path):
 
 def test_predict_raw_returns_risk_fields(monkeypatch, tmp_path):
     prediction_log = tmp_path / "predictions.jsonl"
+    inference_log = tmp_path / "inference_history.csv"
     monkeypatch.setattr(api, "PREDICTION_LOG_PATH", prediction_log)
+    monkeypatch.setattr(api, "INFERENCE_LOG_FILE", inference_log)
     monkeypatch.setattr(api, "raw_pipeline", DummyRawPipeline())
     monkeypatch.setattr(api, "raw_pipeline_error", None)
 
@@ -167,3 +174,40 @@ def test_predict_raw_returns_risk_fields(monkeypatch, tmp_path):
     assert result["verification_required"] == "Blocked"
     assert "recommended_action" in result
     assert prediction_log.exists()
+    assert inference_log.exists()
+
+
+def test_download_data_endpoint_uses_helper(monkeypatch, tmp_path):
+    destination = tmp_path / "raw"
+    (destination / "train.csv").parent.mkdir(parents=True, exist_ok=True)
+    (destination / "train.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+
+    def fake_download_kaggle_dataset(competition, force=False, dest_dir=api.DATA_RAW_DIR):
+        assert competition == "ieee-fraud-detection"
+        assert force is True
+        return destination
+
+    monkeypatch.setattr(api, "download_kaggle_dataset", fake_download_kaggle_dataset)
+
+    response = client.post(
+        "/download-data",
+        json={"competition": "ieee-fraud-detection", "force": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "downloaded"
+    assert payload["competition"] == "ieee-fraud-detection"
+    assert payload["csv_files"] == 1
+
+
+def test_download_data_endpoint_returns_503_when_kagglehub_unavailable(monkeypatch):
+    def fake_download_kaggle_dataset(competition, force=False, dest_dir=api.DATA_RAW_DIR):
+        raise RuntimeError("kagglehub is not installed in the current environment.")
+
+    monkeypatch.setattr(api, "download_kaggle_dataset", fake_download_kaggle_dataset)
+
+    response = client.post("/download-data", json={"force": False})
+
+    assert response.status_code == 503
+    assert "kagglehub is not installed" in response.json()["detail"]
