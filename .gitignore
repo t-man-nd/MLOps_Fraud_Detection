@@ -34,3 +34,4 @@ __pycache__/
 
 # Local report bundles
 FraudDetection_report_package_*.zip
+FraudDetection_video_demo_package_*.zip

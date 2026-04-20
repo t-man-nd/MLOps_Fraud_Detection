@@ -1,20 +1,33 @@
-import pandas as pd
 import json
+from pathlib import Path
 
-# Load RAW data 
-df = pd.read_csv("../data/merged_train_data.csv")
+import pandas as pd
 
-# Get data in validation range
-start_index = df[df['TransactionID'] == 3577280].index[0]
+from data_gen import (
+    DEFAULT_INPUT_PATH,
+    DEFAULT_NUM_ROWS,
+    DEFAULT_TRANSACTION_ID,
+    build_payload,
+)
 
-target_rows = df.iloc[start_index : start_index + 70]
 
-payload = {
-    "records": target_rows.to_dict(orient="records")
-}
+STREAMLIT_DIR = Path(__file__).resolve().parent
+OUTPUT_PATH = STREAMLIT_DIR / "sample_request.json"
 
-with open("sample_request.json", "w", encoding="utf-8") as f:
-    json.dump(payload, f, ensure_ascii=False, indent=2)
 
-print("Saved RAW samples to sample_request.json")
+def main() -> None:
+    df = pd.read_csv(DEFAULT_INPUT_PATH)
+    payload = build_payload(
+        df,
+        transaction_id=DEFAULT_TRANSACTION_ID,
+        num_rows=DEFAULT_NUM_ROWS,
+    )
 
+    with OUTPUT_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    print(f"Saved RAW samples to {OUTPUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()

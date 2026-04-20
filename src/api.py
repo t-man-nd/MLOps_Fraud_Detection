@@ -19,6 +19,7 @@ from src.monitoring import (
     build_feedback_events,
     build_prediction_events,
 )
+from src.download_data import DATA_RAW_DIR, download_kaggle_dataset
 from src.risk_score import RiskScoringEngine
 from src.validation import validate_feature_matrix, validate_model_artifact
 
@@ -56,6 +57,11 @@ class FeedbackRecord(BaseModel):
 
 class FeedbackRequest(BaseModel):
     items: list[FeedbackRecord]
+
+
+class DownloadDataRequest(BaseModel):
+    competition: str = Field(default="ieee-fraud-detection")
+    force: bool = Field(default=False)
 
 
 def log_inference_data(
@@ -220,6 +226,7 @@ def health():
         "prediction_log_path": str(PREDICTION_LOG_PATH),
         "feedback_log_path": str(FEEDBACK_LOG_PATH),
         "inference_log_path": str(INFERENCE_LOG_FILE),
+        "data_raw_dir": str(DATA_RAW_DIR),
         "metrics_path": "/metrics",
     }
 
@@ -229,6 +236,7 @@ def download_data(request: DownloadDataRequest):
     try:
         destination = download_kaggle_dataset(
             competition=request.competition,
+            dest_dir=DATA_RAW_DIR,
             force=request.force,
         )
         n_csv_files = len(list(destination.rglob("*.csv")))
@@ -244,6 +252,77 @@ def download_data(request: DownloadDataRequest):
     except Exception as exc:
         logging.exception("Kaggle data download failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/predict")
+def predict(request: PredictionRequest):
+    try:
+        if not request.records:
+            raise HTTPException(status_code=400, detail="records must not be empty")
+
+        if artifact is None or model is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Model artifact is unavailable. "
+                    f"Missing or invalid artifact: {artifact_error}"
+                ),
+            )
+
+        df_input = pd.DataFrame(request.records)
+        X = prepare_features(df_input, artifact)
+        probabilities = get_probabilities(model, X)
+        predictions = (probabilities >= threshold).astype(int)
+        logged_records = X.to_dict(orient="records")
+        logged_events = build_prediction_events(
+            logged_records,
+            probabilities,
+            predictions,
+            endpoint="/predict",
+            model_name=model_name,
+            threshold=threshold,
+            model_ready=True,
+        )
+
+        try:
+            append_jsonl(PREDICTION_LOG_PATH, logged_events)
+        except Exception:
+            logging.exception("Failed to write prediction logs")
+
+        try:
+            log_inference_data(
+                request.records,
+                probabilities,
+                predictions,
+                endpoint="/predict",
+            )
+        except Exception:
+            logging.exception("Failed to write inference CSV logs")
+
+        results = []
+        for index, _row in enumerate(request.records):
+            results.append(
+                {
+                    "index": index,
+                    "request_id": logged_events[index]["request_id"],
+                    "prediction_id": logged_events[index]["prediction_id"],
+                    "fraud_probability": float(probabilities[index]),
+                    "prediction": int(predictions[index]),
+                    "threshold": threshold,
+                    "model_name": model_name,
+                }
+            )
+
+        return {
+            "n_records": len(results),
+            "results": results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Prediction failed")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/predict_raw")

@@ -15,10 +15,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DATA_RAW_DIR = Path("data/raw")
+
 
 def download_kaggle_dataset(
     competition: str,
-    dest_dir: Path,
+    dest_dir: Path = DATA_RAW_DIR,
     force: bool = False,
 ) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
