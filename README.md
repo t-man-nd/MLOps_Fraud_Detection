@@ -435,9 +435,9 @@ models/model.pkl
 ```
 
 ## Team Members
-Ha Quang Minh 
-Doan Tung Lam 
-Pham Minh Bao Ngoc 
-Bui Thi Lan Anh 
-Pham Thanh Long 
+Ha Quang Minh  
+Doan Tung Lam  
+Pham Minh Bao Ngoc   
+Bui Thi Lan Anh  
+Pham Thanh Long  
 Ninh Duy Tuan
