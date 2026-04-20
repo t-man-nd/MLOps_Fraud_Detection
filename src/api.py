@@ -1,7 +1,5 @@
 import logging
 import os
-import shutil
-from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +10,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
+
 from src.inference_pipeline import RawInferencePipeline
 from src.monitoring import (
     FEEDBACK_LOG_PATH,
@@ -23,11 +22,6 @@ from src.monitoring import (
 from src.risk_score import RiskScoringEngine
 from src.validation import validate_feature_matrix, validate_model_artifact
 
-try:
-    import kagglehub
-except ImportError:  # pragma: no cover - optional dependency in some environments
-    kagglehub = None
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,16 +32,8 @@ logger = logging.getLogger(__name__)
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/model.pkl"))
 PREPROCESSOR_PATH = Path(os.getenv("PREPROCESSOR_PATH", "models/preprocessor_v1.pkl"))
 FEATURE_ARTIFACT_PATH = Path(os.getenv("FEATURE_ARTIFACT_PATH", "artifacts/fe_artifact.pkl"))
-KAGGLE_COMPETITION = os.getenv("KAGGLE_COMPETITION", "ieee-fraud-detection")
-DATA_RAW_DIR = Path(os.getenv("DATA_RAW_DIR", "data/raw"))
 INFERENCE_LOG_FILE = Path(os.getenv("INFERENCE_LOG_FILE", "logs/inference_history.csv"))
 INFERENCE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-AUTO_DOWNLOAD_KAGGLE_DATA = os.getenv("AUTO_DOWNLOAD_KAGGLE_DATA", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 
 
 class PredictionRequest(BaseModel):
@@ -70,44 +56,6 @@ class FeedbackRecord(BaseModel):
 
 class FeedbackRequest(BaseModel):
     items: list[FeedbackRecord]
-
-
-class DownloadDataRequest(BaseModel):
-    competition: str = Field(default=KAGGLE_COMPETITION)
-    force: bool = False
-
-
-def download_kaggle_dataset(
-    competition: str = KAGGLE_COMPETITION,
-    dest_dir: Path = DATA_RAW_DIR,
-    force: bool = False,
-) -> Path:
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    existing_csv_files = list(dest_dir.rglob("*.csv"))
-    if existing_csv_files and not force:
-        logger.info(
-            "Kaggle raw data already exists at %s (%d csv files).",
-            dest_dir,
-            len(existing_csv_files),
-        )
-        return dest_dir
-
-    if kagglehub is None:
-        raise RuntimeError("kagglehub is not installed in the current environment.")
-
-    logger.info("Downloading Kaggle competition data for '%s' ...", competition)
-    kaggle_cache_path = Path(kagglehub.competition_download(competition))
-
-    for src_file in kaggle_cache_path.rglob("*"):
-        if src_file.is_file():
-            relative = src_file.relative_to(kaggle_cache_path)
-            dst_file = dest_dir / relative
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dst_file)
-
-    logger.info("Kaggle data synced to %s", dest_dir)
-    return dest_dir
 
 
 def log_inference_data(
@@ -249,25 +197,11 @@ def refresh_runtime_state() -> None:
     raw_pipeline, raw_pipeline_error = init_raw_pipeline()
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    if AUTO_DOWNLOAD_KAGGLE_DATA:
-        try:
-            download_kaggle_dataset(force=False)
-        except Exception as exc:  # pragma: no cover - startup network/auth dependent
-            logger.warning("Automatic Kaggle download skipped: %s", exc)
-
-    refresh_runtime_state()
-    yield
-
-
 app = FastAPI(
     title="IEEE Fraud Detection API",
     version="1.0.0",
     description="Live inference API for fraud probability prediction.",
-    lifespan=lifespan,
 )
-
 
 refresh_runtime_state()
 
@@ -286,32 +220,8 @@ def health():
         "prediction_log_path": str(PREDICTION_LOG_PATH),
         "feedback_log_path": str(FEEDBACK_LOG_PATH),
         "inference_log_path": str(INFERENCE_LOG_FILE),
-        "data_raw_dir": str(DATA_RAW_DIR),
-        "kaggle_competition": KAGGLE_COMPETITION,
         "metrics_path": "/metrics",
     }
-
-
-@app.post("/download-data")
-def download_data(request: DownloadDataRequest):
-    try:
-        destination = download_kaggle_dataset(
-            competition=request.competition,
-            force=request.force,
-        )
-        n_csv_files = len(list(destination.rglob("*.csv")))
-        return {
-            "status": "downloaded",
-            "competition": request.competition,
-            "destination": str(destination),
-            "csv_files": n_csv_files,
-            "force": request.force,
-        }
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        logging.exception("Kaggle data download failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/predict")
@@ -468,7 +378,6 @@ def feedback(request: FeedbackRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Expose Prometheus-compatible service metrics for Kubernetes monitoring.
 Instrumentator(
     excluded_handlers=["/health", "/metrics"],
 ).instrument(app).expose(app, include_in_schema=False)
