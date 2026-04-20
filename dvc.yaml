@@ -1,4 +1,14 @@
 stages:
+  download_data:
+    cmd: python src/download_data.py --competition ${download.competition} --dest_dir ${download.dest_dir}
+    deps:
+      - src/download_data.py
+    params:
+      - download.competition
+      - download.dest_dir
+    outs:
+      - data/raw
+
   preprocess:
     cmd: python src/preprocess.py --input_path ${preprocess.input_path} --output_dir ${preprocess.output_dir} --model_dir ${preprocess.model_dir} --train_ratio ${preprocess.train_ratio} --top_k_missing ${preprocess.top_k_missing} --clip_percentile ${preprocess.clip_percentile} --cat_min_freq ${preprocess.cat_min_freq}
     deps:
